@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# ========== CONFIGS ==========
+PROJECT_NAME='Sample Project'
+DB_NAME='sample_db'
+DB_USER='sample_db_user'
+DB_PASSWORD='sample_db_pass'
+WP_HOME='https://sample.com'
+# =============================
+
+# ========= FUNCTIONS =========
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+log_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+log_failed() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+log_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+# =============================
+
+
+composer create-project roots/bedrock $PROJECT_NAME
+
+if [ $? -eq 0 ]; then
+	log_success "Created $PROJECT_NAME"
+else
+	log_failed "Failed to create $PROJECT_NAME"
+	exit 1
+fi
+
+ENV_FILE=$(find . -type f -name ".env.example" -print -quit)
+
+if [ -n "$ENV_FILE" ]; then
+    cp "$ENV_FILE" $PROJECT_NAME/.env
+    log_success "Copied $ENV_FILE to $PROJECT_NAME/.env"
+else
+    log_failed "$ENV_FILE File not found"
+    exit 1
+fi
+
+rm -rf "$ENV_FILE"
+
+if [ $? -eq 0 ]; then
+	log_success "Deleted $ENV_FILE"
+else
+	log_warning "Failed to delete $ENV_FILE"
+fi
+
+set_env() {
+    local key="$1"
+    local value="$2"
+
+    # Escape characters that are special in sed replacement
+    value=$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')
+
+    if sed -i "s|^${key}=.*|${key}='${value}'|" $PROJECT_NAME/.env; then
+        log_success "Updated $key"
+    else
+        log_failed "Failed to update $key"
+        exit 1
+    fi
+}
+
+set_env "PROJECT_NAME" "$PROJECT_NAME"
+set_env "DB_NAME" "$DB_NAME"
+set_env "DB_USER" "$DB_USER"
+set_env "DB_PASSWORD" "$DB_PASSWORD"
+set_env "WP_HOME" "$WP_HOME"
+
+
+log_success "Setup complete"
