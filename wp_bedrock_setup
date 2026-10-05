@@ -1,80 +1,118 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 # ========== CONFIGS ==========
-PROJECT_NAME='Sample Project'
-DB_NAME='sample_db'
-DB_USER='sample_db_user'
-DB_PASSWORD='sample_db_pass'
-WP_HOME='https://sample.com'
+# Every value can be overridden from the environment, e.g.
+#   PROJECT_NAME="Acme Site" DB_NAME=acme ./setup-bedrock.sh
+PROJECT_NAME="${PROJECT_NAME:-Sample Project}"
+PROJECT_DIR="${PROJECT_DIR:-}"            # defaults to a slug of PROJECT_NAME
+DB_NAME="${DB_NAME:-sample_db}"
+DB_USER="${DB_USER:-sample_db_user}"
+DB_PASSWORD="${DB_PASSWORD:-}"            # prompted for if empty
+DB_HOST="${DB_HOST:-localhost}"
+WP_ENV="${WP_ENV:-development}"
+WP_HOME="${WP_HOME:-https://sample.test}"
 # =============================
 
 # ========= FUNCTIONS =========
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-log_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+log_success() { echo -e "${GREEN}✓ $1${NC}"; }
+log_failed()  { echo -e "${RED}✗ $1${NC}" >&2; }
+log_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+die()         { log_failed "$1"; exit 1; }
+
+slugify() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
 }
 
-log_failed() {
-    echo -e "${RED}✗ $1${NC}"
-}
-
-log_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
-# =============================
-
-
-composer create-project roots/bedrock $PROJECT_NAME
-
-if [ $? -eq 0 ]; then
-	log_success "Created $PROJECT_NAME"
-else
-	log_failed "Failed to create $PROJECT_NAME"
-	exit 1
-fi
-
-ENV_FILE=$(find . -type f -name ".env.example" -print -quit)
-
-if [ -n "$ENV_FILE" ]; then
-    cp "$ENV_FILE" $PROJECT_NAME/.env
-    log_success "Copied $ENV_FILE to $PROJECT_NAME/.env"
-else
-    log_failed "$ENV_FILE File not found"
-    exit 1
-fi
-
-rm -rf "$ENV_FILE"
-
-if [ $? -eq 0 ]; then
-	log_success "Deleted $ENV_FILE"
-else
-	log_warning "Failed to delete $ENV_FILE"
-fi
-
-set_env() {
-    local key="$1"
-    local value="$2"
-
-    # Escape characters that are special in sed replacement
-    value=$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')
-
-    if sed -i "s|^${key}=.*|${key}='${value}'|" $PROJECT_NAME/.env; then
-        log_success "Updated $key"
+# In-place sed that works with GNU sed (Linux) and BSD sed (macOS)
+sed_inplace() {
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$@"
     else
-        log_failed "Failed to update $key"
-        exit 1
+        sed -i '' "$@"
     fi
 }
 
+# Sets KEY='value' in .env: replaces the line (uncommenting it if needed),
+# or appends it if the key isn't in the file at all.
+set_env() {
+    local key="$1" value="$2" escaped
+
+    if [[ "$value" == *"'"* ]]; then
+        die "Value for $key contains a single quote, which can't be stored in a single-quoted .env value"
+    fi
+
+    escaped=$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')
+
+    if grep -qE "^#?[[:space:]]*${key}=" "$ENV_FILE"; then
+        sed_inplace -E "s|^#?[[:space:]]*${key}=.*|${key}='${escaped}'|" "$ENV_FILE"
+    else
+        printf "%s='%s'\n" "$key" "$value" >> "$ENV_FILE"
+    fi
+    log_success "Set $key"
+}
+# =============================
+
+# ---- Preflight checks ----
+for cmd in composer openssl; do
+    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not installed"
+done
+
+PROJECT_DIR="${PROJECT_DIR:-$(slugify "$PROJECT_NAME")}"
+[[ -n "$PROJECT_DIR" ]] || die "Could not derive a folder name from '$PROJECT_NAME'"
+
+if [[ -e "$PROJECT_DIR" ]]; then
+    die "'$PROJECT_DIR' already exists. Remove it or set PROJECT_DIR to something else."
+fi
+
+if [[ -z "$DB_PASSWORD" ]]; then
+    read -rsp "Database password for $DB_USER: " DB_PASSWORD
+    echo
+fi
+[[ -n "$DB_PASSWORD" ]] || die "Database password cannot be empty"
+
+# ---- Create project ----
+if composer create-project roots/bedrock "$PROJECT_DIR" --no-interaction; then
+    log_success "Created $PROJECT_NAME in ./$PROJECT_DIR"
+else
+    die "Failed to create $PROJECT_NAME"
+fi
+
+ENV_EXAMPLE="$PROJECT_DIR/.env.example"
+ENV_FILE="$PROJECT_DIR/.env"
+
+# Bedrock normally creates .env itself after install; only copy if it didn't.
+if [[ ! -f "$ENV_FILE" ]]; then
+    [[ -f "$ENV_EXAMPLE" ]] || die "$ENV_EXAMPLE not found"
+    cp "$ENV_EXAMPLE" "$ENV_FILE"
+    log_success "Created .env from .env.example"
+fi
+
+# ---- Configure .env ----
 set_env "PROJECT_NAME" "$PROJECT_NAME"
-set_env "DB_NAME" "$DB_NAME"
-set_env "DB_USER" "$DB_USER"
-set_env "DB_PASSWORD" "$DB_PASSWORD"
-set_env "WP_HOME" "$WP_HOME"
+set_env "DB_NAME"      "$DB_NAME"
+set_env "DB_USER"      "$DB_USER"
+set_env "DB_PASSWORD"  "$DB_PASSWORD"
+set_env "DB_HOST"      "$DB_HOST"
+set_env "WP_ENV"       "$WP_ENV"
+set_env "WP_HOME"      "$WP_HOME"
 
+# ---- Generate unique salts ----
+for key in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY \
+           AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+    set_env "$key" "$(openssl rand -base64 48 | tr -d '\n')"
+done
 
+chmod 600 "$ENV_FILE"
+
+echo
 log_success "Setup complete"
+echo "Next steps:"
+echo "  1. Create the database '$DB_NAME' and grant access to '$DB_USER'"
+echo "  2. Point your web server's document root to $(pwd)/$PROJECT_DIR/web"
+echo "  3. Visit $WP_HOME/wp/wp-admin to finish the install"
