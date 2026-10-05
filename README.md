@@ -1,3 +1,9 @@
+# A Simple BASH script to setup Bedrock WP boiler plate and configure Wordpress and DB settings
+
+Dependencies: 
+composer
+bash
+
 ## How to run wp_bedrock_setup
 
 Make ```wp_bedrock_setup``` executable
